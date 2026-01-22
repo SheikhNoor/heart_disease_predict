@@ -394,9 +394,9 @@ The developers and contributors assume **no liability** for any medical decision
 ### Developer
 **Md Nurullah**
 - 💼 Role: Lead Developer & Data Scientist
-- 📧 Contact: [Your Email]
-- 🔗 GitHub: [Your GitHub Profile]
-- 💼 LinkedIn: [Your LinkedIn Profile]
+- 📧 Contact: [mdnurullah.co@gmail.com](mailto:mdnurullah.co@gmail.com)
+- 🔗 GitHub: [github.com/SheikhNoor](https://github.com/SheikhNoor)
+- 💼 LinkedIn: [linkedin.com/in/md-nurullah-1481b7253](https://www.linkedin.com/in/md-nurullah-1481b7253/)
 
 ### Dataset Credits
 **Principal Investigators:**
@@ -451,8 +451,9 @@ For questions, issues, or suggestions:
 
 - 🐛 **Bug Reports**: Open an issue on GitHub
 - 💡 **Feature Requests**: Submit a feature request
-- 📧 **Email**: [Your Email]
-- 💬 **Discussions**: Join the discussion forum
+- 📧 **Email**: [mdnurullah.co@gmail.com](mailto:mdnurullah.co@gmail.com)
+- 💬 **GitHub**: [github.com/SheikhNoor](https://github.com/SheikhNoor)
+- 💬 **LinkedIn**: [linkedin.com/in/md-nurullah-1481b7253](https://www.linkedin.com/in/md-nurullah-1481b7253/)
 
 ---
 
