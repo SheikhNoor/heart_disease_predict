@@ -393,6 +393,33 @@ if page == "🏠 Home":
             st.markdown(f"**{title}**")
             st.markdown(f"<h3>{format_str.format(df[feature].mean())}</h3>", unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Developer section with social links
+    st.markdown("---")
+    st.markdown("""
+    <div style='text-align: center; padding: 30px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                border-radius: 15px; margin-top: 30px;'>
+        <h3 style='color: white; margin-bottom: 15px;'>👨‍💻 Developed by Md Nurullah</h3>
+        <p style='color: #e0e0e0; font-size: 14px; margin-bottom: 20px;'>Advanced Healthcare Analytics | Machine Learning Solutions</p>
+        <div style='display: flex; justify-content: center; gap: 20px; margin-top: 15px;'>
+            <a href='https://github.com/SheikhNoor' target='_blank' style='display: inline-flex; align-items: center; gap: 8px; 
+               padding: 10px 20px; background: rgba(255,255,255,0.2); color: white; text-decoration: none; 
+               border-radius: 8px; font-weight: 600; transition: all 0.3s;'>
+                🔗 GitHub
+            </a>
+            <a href='https://www.linkedin.com/in/md-nurullah-1481b7253/' target='_blank' style='display: inline-flex; align-items: center; gap: 8px; 
+               padding: 10px 20px; background: rgba(255,255,255,0.2); color: white; text-decoration: none; 
+               border-radius: 8px; font-weight: 600; transition: all 0.3s;'>
+                💼 LinkedIn
+            </a>
+            <a href='mailto:mdnurullah.co@gmail.com' style='display: inline-flex; align-items: center; gap: 8px; 
+               padding: 10px 20px; background: rgba(255,255,255,0.2); color: white; text-decoration: none; 
+               border-radius: 8px; font-weight: 600; transition: all 0.3s;'>
+                📧 Email
+            </a>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 # DATA EXPLORATION PAGE
 elif page == "📊 Data Exploration":
