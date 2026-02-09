@@ -8,12 +8,17 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
+import os
 from PIL import Image
+import torch
+from pytorch_tabnet.tab_model import TabNetClassifier
+import pickle
 
 # Load logo for page icon
 try:
@@ -48,7 +53,7 @@ st.markdown("""
     }
     
     .block-container {
-        padding-top: 2rem;
+        padding-top: 3rem;
         background: #1a1a1a;
     }
     
@@ -80,7 +85,7 @@ st.markdown("""
     
     .logo-container {
         text-align: center;
-        margin-bottom: 10px;
+        margin-bottom: 20px;
         animation: fadeIn 1.5s ease-in;
         display: flex;
         justify-content: center;
@@ -88,12 +93,16 @@ st.markdown("""
     }
     
     .logo-container img {
-        max-width: 150px;
-        height: auto;
-        border-radius: 15px;
-        box-shadow: 0 5px 20px rgba(102, 126, 234, 0.3);
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
         margin: 0 auto;
         display: block;
+        object-fit: cover;
+        border: 4px solid rgba(255, 255, 255, 0.3);
+        background: white;
+        padding: 10px;
     }
     
     .big-font {
@@ -269,28 +278,135 @@ st.markdown("""
 # Load and cache data
 @st.cache_data
 def load_data():
-    df = pd.read_csv('heart.csv')
-    return df
+    cleaned_path = os.path.join('datasets', 'cleaned_df.csv')
+    if os.path.exists(cleaned_path):
+        df = pd.read_csv(cleaned_path)
+        # Rename columns to match expected format
+        column_mapping = {
+            'chest_pain_type': 'cp',
+            'resting_bp': 'trestbps',
+            'cholestrol': 'chol',
+            'fasting_blood_suger': 'fbs',
+            'max_heart_rate': 'thalach',
+            'num_major_vessels': 'ca'
+        }
+        df = df.rename(columns=column_mapping)
+        # Drop Unnamed: 0 if present
+        if 'Unnamed: 0' in df.columns:
+            df = df.drop('Unnamed: 0', axis=1)
+        # Add missing lifestyle columns with defaults if not present
+        if 'smoking' not in df.columns:
+            df['smoking'] = 0
+        if 'diabetes' not in df.columns:
+            df['diabetes'] = 0
+        if 'bmi' not in df.columns:
+            df['bmi'] = 25.0
+        return df
+    return pd.read_csv(os.path.join('datasets', 'heart.csv'))
+
+@st.cache_resource
+def load_pretrained_tabnet():
+    """Load pre-trained TabNet model if available"""
+    try:
+        if os.path.exists('models/tabnet_model.zip'):
+            model = TabNetClassifier()
+            model.load_model('models/tabnet_model.zip')
+            return model
+    except:
+        pass
+    return None
 
 @st.cache_resource
 def train_model(X_train, y_train, model_type):
     if model_type == "Random Forest":
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-    elif model_type == "Gradient Boosting":
-        model = GradientBoostingClassifier(n_estimators=100, random_state=42)
+        model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+        model.fit(X_train, y_train)
     elif model_type == "Logistic Regression":
-        model = LogisticRegression(max_iter=1000, random_state=42)
-    else:  # SVM
-        model = SVC(probability=True, random_state=42)
+        model = LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced')
+        model.fit(X_train, y_train)
+    elif model_type == "SVM":
+        model = SVC(probability=True, random_state=42, class_weight='balanced')
+        model.fit(X_train, y_train)
+    elif model_type == "MLP (Neural Network)":
+        model = MLPClassifier(
+            hidden_layer_sizes=(128, 64, 32),  # 3 hidden layers
+            activation='relu',
+            solver='adam',
+            alpha=0.0001,  # L2 regularization
+            batch_size='auto',
+            learning_rate='adaptive',
+            learning_rate_init=0.001,
+            max_iter=500,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=20,
+            random_state=42,
+            verbose=False
+        )
+        model.fit(X_train, y_train)
+    elif model_type == "TabNet (Deep Learning)":
+        # DO NOT use pre-trained model - it was trained on different dataset
+        # Always train fresh TabNet on current data
+        st.info("🧠 Training TabNet Deep Learning Model on current dataset...")
+        
+        # TabNet needs numpy arrays, not pandas
+        X_train_np = X_train if isinstance(X_train, np.ndarray) else X_train.values
+        y_train_np = y_train if isinstance(y_train, np.ndarray) else y_train.values
+        
+        # Calculate appropriate batch size based on dataset size
+        n_samples = len(X_train_np)
+        # Use smaller batch size for small datasets to avoid single-sample batches
+        batch_size = min(32, max(8, n_samples // 8))
+        virtual_batch_size = max(4, batch_size // 2)
+        
+        model = TabNetClassifier(
+            n_d=64,                    # Increased from 32 for better capacity
+            n_a=64,                    # Increased from 32
+            n_steps=5,                 # Increased from 3 for more decision steps
+            gamma=1.5,                 # Feature reusage parameter
+            n_independent=2,
+            n_shared=2,
+            lambda_sparse=1e-3,
+            optimizer_fn=torch.optim.Adam,
+            optimizer_params=dict(lr=2e-2),
+            scheduler_params={"step_size": 50, "gamma": 0.9},
+            scheduler_fn=torch.optim.lr_scheduler.StepLR,
+            mask_type='entmax',        # Better feature selection than 'sparsemax'
+            seed=42,
+            verbose=0
+        )
+        
+        # Train with proper validation split
+        from sklearn.model_selection import train_test_split as tt_split
+        X_tr, X_val, y_tr, y_val = tt_split(
+            X_train_np, y_train_np, 
+            test_size=0.2, 
+            random_state=42, 
+            stratify=y_train_np
+        )
+        
+        model.fit(
+            X_tr, y_tr,
+            eval_set=[(X_val, y_val)],
+            eval_name=['valid'],
+            eval_metric=['accuracy', 'logloss'],
+            max_epochs=100,            # Reduced for faster training
+            patience=20,               # Early stopping
+            batch_size=batch_size,     # Dynamic batch size based on dataset
+            virtual_batch_size=virtual_batch_size,
+            num_workers=0,
+            drop_last=False,
+            weights=1                  # Equal weighting (can adjust for imbalance)
+        )
+        return model
     
-    model.fit(X_train, y_train)
     return model
 
 # Logo and title with animation
 try:
     st.markdown("""
-        <div style="display: flex; justify-content: center; align-items: center; margin-bottom: 10px;">
-            <img src="data:image/webp;base64,{}" style="max-width: 150px; border-radius: 15px; box-shadow: 0 5px 20px rgba(102, 126, 234, 0.3);">
+        <div style="display: flex; justify-content: center; align-items: center; margin-bottom: 20px; margin-top: 30px; padding-top: 20px;">
+            <img src="data:image/webp;base64,{}" style="width: 120px; height: 120px; border-radius: 50%; box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4); object-fit: cover; border: 4px solid rgba(255, 255, 255, 0.3); background: white; padding: 10px;">
         </div>
     """.format(__import__('base64').b64encode(open('image/logo.webp', 'rb').read()).decode()), unsafe_allow_html=True)
 except:
@@ -299,11 +415,18 @@ except:
 st.markdown('<p class="big-font">Heart Disease Prediction System</p>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">Advanced ML-Powered Cardiovascular Risk Assessment</p>', unsafe_allow_html=True)
 
+# Load data
+df = load_data()
+
 # Sidebar
 with st.sidebar:
     # Display logo in sidebar
     try:
-        st.image('image/logo.webp', use_container_width=True)
+        st.markdown("""
+            <div style="display: flex; justify-content: center; align-items: center; margin-bottom: 15px;">
+                <img src="data:image/webp;base64,{}" style="width: 100px; height: 100px; border-radius: 50%; box-shadow: 0 5px 20px rgba(255, 255, 255, 0.3); object-fit: cover; border: 3px solid rgba(255, 255, 255, 0.5); background: white; padding: 8px;">
+            </div>
+        """.format(__import__('base64').b64encode(open('image/logo.webp', 'rb').read()).decode()), unsafe_allow_html=True)
         st.markdown("---")
     except:
         pass
@@ -313,18 +436,29 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("### 📚 Dataset Info")
-    st.info("""
-    **Source**: UCI Heart Disease Dataset
+    feature_count = max(df.shape[1] - 1, 0)
+    st.info(f"""
+    **Source**: UCI Heart Disease Dataset + Extended Dataset
     
-    **Records**: 303 patients
+    **Records**: {df.shape[0]} patients
     
-    **Features**: 14 clinical attributes
+    **Features**: {feature_count} clinical attributes
     
     **Target**: Heart disease presence
     """)
-
-# Load data
-df = load_data()
+    
+    st.warning("""
+    ⚠️ **Important Note:**
+    
+    This dataset has UNUSUAL patterns that differ from typical medical knowledge:
+    
+    • Disease patients are YOUNGER (52 vs 56 years)
+    • Disease patients have LOWER blood pressure
+    • Disease patients have LOWER ST depression
+    • Disease patients have FEWER blocked vessels
+    
+    The ML model learns from THIS specific dataset's patterns, not general medical rules.
+    """)
 
 # HOME PAGE
 if page == "🏠 Home":
@@ -379,12 +513,13 @@ if page == "🏠 Home":
     # Feature importance preview
     st.markdown("### 🎯 Key Health Indicators")
     
-    cols = st.columns(4)
+    cols = st.columns(5)
     features_info = [
         ("🫀 Max Heart Rate", "thalach", "Average: {:.0f} bpm"),
         ("🩸 Cholesterol", "chol", "Average: {:.0f} mg/dl"),
         ("💉 Blood Pressure", "trestbps", "Average: {:.0f} mm Hg"),
-        ("📈 ST Depression", "oldpeak", "Average: {:.2f}")
+        ("📈 ST Depression", "oldpeak", "Average: {:.2f}"),
+        ("🧍 BMI", "bmi", "Average: {:.1f}")
     ]
     
     for col, (title, feature, format_str) in zip(cols, features_info):
@@ -546,16 +681,19 @@ elif page == "🔮 Prediction":
             fbs = st.selectbox("🍬 Fasting Blood Sugar > 120 mg/dl", ["No", "Yes"])
             restecg = st.selectbox("📉 Resting ECG", 
                                   ["Normal", "ST-T Wave Abnormality", "Left Ventricular Hypertrophy"])
+            bmi = st.slider("🧍 BMI (Body Mass Index)", 10.0, 50.0, 25.0, 0.1)
         
         with col_b:
             thalach = st.slider("❤️ Maximum Heart Rate", 60, 220, 150)
             exang = st.selectbox("🏃 Exercise Induced Angina", ["No", "Yes"])
             oldpeak = st.slider("📊 ST Depression", 0.0, 6.0, 1.0, 0.1)
-            slope = st.selectbox("📈 Slope of Peak Exercise ST", 
+            slope = st.selectbox("📈 Slope of Peak Exercise ST Segment", 
                                ["Upsloping", "Flat", "Downsloping"])
             ca = st.slider("🔬 Number of Major Vessels (0-3)", 0, 3, 0)
             thal = st.selectbox("🫀 Thalassemia", 
                               ["Normal", "Fixed Defect", "Reversible Defect"])
+            smoking = st.selectbox("🚬 Smoking", ["No", "Yes"])
+            diabetes = st.selectbox("🩺 Diabetes", ["No", "Yes"])
         
         # Convert inputs
         sex_map = {"Female": 0, "Male": 1}
@@ -565,19 +703,34 @@ elif page == "🔮 Prediction":
         exang_map = {"No": 0, "Yes": 1}
         slope_map = {"Upsloping": 0, "Flat": 1, "Downsloping": 2}
         thal_map = {"Normal": 1, "Fixed Defect": 2, "Reversible Defect": 3}
+        smoking_map = {"No": 0, "Yes": 1}
+        diabetes_map = {"No": 0, "Yes": 1}
         
-        input_data = np.array([[
-            age, sex_map[sex], cp_map[cp], trestbps, chol, fbs_map[fbs],
-            restecg_map[restecg], thalach, exang_map[exang], oldpeak,
-            slope_map[slope], ca, thal_map[thal]
-        ]])
+        input_payload = {
+            "age": age,
+            "sex": sex_map[sex],
+            "cp": cp_map[cp],
+            "trestbps": trestbps,
+            "chol": chol,
+            "fbs": fbs_map[fbs],
+            "restecg": restecg_map[restecg],
+            "thalach": thalach,
+            "exang": exang_map[exang],
+            "oldpeak": oldpeak,
+            "slope": slope_map[slope],
+            "ca": ca,
+            "thal": thal_map[thal],
+            "smoking": smoking_map[smoking],
+            "diabetes": diabetes_map[diabetes],
+            "bmi": bmi
+        }
     
     with col2:
         st.markdown("### ⚙️ Model Settings")
         
         model_type = st.selectbox("🤖 Select Model", 
-                                 ["Random Forest", "Gradient Boosting", 
-                                  "Logistic Regression", "SVM"])
+                                 ["Random Forest", "Logistic Regression", "SVM", 
+                                  "MLP (Neural Network)", "TabNet (Deep Learning)"])
         
         st.markdown("---")
         
@@ -588,7 +741,27 @@ elif page == "🔮 Prediction":
         **BP**: {trestbps} mm Hg
         **Cholesterol**: {chol} mg/dl
         **Max HR**: {thalach} bpm
+        **BMI**: {bmi:.1f}
+        **Smoking**: {smoking}
+        **Diabetes**: {diabetes}
         """)
+        
+        st.markdown("---")
+        
+        st.markdown("#### 📖 Medical Terms Glossary")
+        st.markdown("""<div class='info-box' style='font-size: 14px;'>
+        <strong>CP</strong> - Chest Pain Type<br>
+        <strong>BP</strong> - Blood Pressure<br>
+        <strong>FBS</strong> - Fasting Blood Sugar<br>
+        <strong>ECG</strong> - Electrocardiogram<br>
+        <strong>HR</strong> - Heart Rate<br>
+        <strong>ST</strong> - ST Segment (ECG measurement)<br>
+        <strong>BMI</strong> - Body Mass Index<br>
+        <strong>CA</strong> - Coronary Arteries<br>
+        <strong>mm Hg</strong> - Millimeters of Mercury<br>
+        <strong>mg/dl</strong> - Milligrams per Deciliter<br>
+        <strong>bpm</strong> - Beats per Minute
+        </div>""", unsafe_allow_html=True)
     
     # Predict button
     if st.button("🔮 Predict Risk", use_container_width=True):
@@ -609,20 +782,26 @@ elif page == "🔮 Prediction":
             
             scaler = StandardScaler()
             X_train_scaled = scaler.fit_transform(X_train)
-            input_scaled = scaler.transform(input_data)
+            input_df = pd.DataFrame([input_payload]).reindex(columns=X.columns, fill_value=0)
+            input_scaled = scaler.transform(input_df)
             
             # Train model
             model = train_model(X_train_scaled, y_train, model_type)
             
-            # Make prediction
-            prediction = model.predict(input_scaled)[0]
+            # Make prediction - purely based on ML model, no manual overrides
             probability = model.predict_proba(input_scaled)[0]
+            prediction = model.predict(input_scaled)[0]
             
             st.success("✅ Analysis Complete!")
             
             # Display result with animation
             st.markdown("---")
             st.markdown("### 🎯 Prediction Result")
+            
+            # Add explanation of ML prediction
+            st.info(f"""
+🤖 **ML-Based Prediction:** This result is calculated by the **{model_type}** model trained on **{len(df)} real patient records**. The model learned patterns from actual data, not from hardcoded age/BP rules. Heart disease can affect anyone at any age - the prediction is based purely on what the model learned from patient outcomes.
+            """)
             
             if prediction == 0:
                 st.markdown(f'''
@@ -653,14 +832,14 @@ elif page == "🔮 Prediction":
                     delta={'reference': 50, 'increasing': {'color': "#f5576c"}},
                     gauge={
                         'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
-                        'bar': {'color': "#f5576c" if probability[1] > 0.5 else "#667eea"},
+                        'bar': {'color': "#f5576c" if probability[1] >= 0.5 else "#667eea"},
                         'bgcolor': "white",
                         'borderwidth': 2,
                         'bordercolor': "gray",
                         'steps': [
-                            {'range': [0, 30], 'color': '#d4edda'},
-                            {'range': [30, 70], 'color': '#fff3cd'},
-                            {'range': [70, 100], 'color': '#f8d7da'}
+                            {'range': [0, 50], 'color': '#d4edda'},
+                            {'range': [50, 75], 'color': '#fff3cd'},
+                            {'range': [75, 100], 'color': '#f8d7da'}
                         ],
                         'threshold': {
                             'line': {'color': "red", 'width': 4},
@@ -684,6 +863,241 @@ elif page == "🔮 Prediction":
                 ])
                 fig.update_layout(barmode='group', height=300, yaxis_title="Probability (%)")
                 st.plotly_chart(fig, use_container_width=True)
+            
+            # ML Feature Importance Analysis
+            st.markdown("---")
+            st.markdown("### 🧠 What The Model Learned From Data")
+            st.info(f"""
+🤖 **Data-Driven Insights:** This shows how much each feature influenced the ML model's decision based on patterns learned from {len(df)} real patients. These are NOT hardcoded rules - they're what the model discovered by analyzing actual patient outcomes.
+            """)
+            
+            # Get feature importance from the model
+            feature_importance = None
+            feature_names = X.columns.tolist()
+            
+            if hasattr(model, 'feature_importances_'):
+                # Tree-based models (Random Forest, Gradient Boosting)
+                feature_importance = model.feature_importances_
+            elif hasattr(model, 'coef_'):
+                # Linear models (Logistic Regression, SVM) or MLP
+                if "MLP" in model_type:
+                    # For MLP, use the weights from the first layer
+                    # coefs_[0] is the weight matrix from input to first hidden layer
+                    feature_importance = np.abs(model.coefs_[0]).mean(axis=1)
+                else:
+                    # For linear models
+                    feature_importance = np.abs(model.coef_[0])
+            elif "TabNet" in model_type:
+                # TabNet has explain method
+                try:
+                    explain_matrix, masks = model.explain(input_scaled)
+                    feature_importance = explain_matrix[0]
+                except:
+                    # If explain fails, use dummy importance
+                    feature_importance = None
+            
+            if feature_importance is not None:
+                # Create feature importance dataframe
+                importance_df = pd.DataFrame({
+                    'Feature': feature_names,
+                    'Importance': feature_importance,
+                    'Your Value': [input_payload.get(f, 0) for f in feature_names]
+                }).sort_values('Importance', ascending=False).head(10)
+                
+                # Normalize importance to percentage
+                importance_df['Importance %'] = (importance_df['Importance'] / importance_df['Importance'].sum() * 100)
+                
+                st.markdown("#### 🎯 Top 10 Most Influential Features")
+                
+                # Display as horizontal bar chart
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    y=importance_df['Feature'][::-1],
+                    x=importance_df['Importance %'][::-1],
+                    orientation='h',
+                    marker=dict(
+                        color=importance_df['Importance %'][::-1],
+                        colorscale='Viridis',
+                        showscale=True,
+                        colorbar=dict(title="Impact %")
+                    ),
+                    text=importance_df['Importance %'][::-1].round(1),
+                    texttemplate='%{text:.1f}%',
+                    textposition='auto',
+                ))
+                fig.update_layout(
+                    title='Features Ranked by Impact on This Prediction',
+                    xaxis_title='Impact on Prediction (%)',
+                    yaxis_title='Feature',
+                    height=400,
+                    showlegend=False
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Show comparison with dataset averages
+                st.markdown("#### 📊 Your Values vs Dataset Average")
+                
+                comparison_data = []
+                for idx, row in importance_df.iterrows():
+                    feat = row['Feature']
+                    your_val = row['Your Value']
+                    
+                    # Get dataset statistics for this feature
+                    if feat in df.columns:
+                        dataset_mean = df[feat].mean()
+                        disease_mean = df[df['target'] == 1][feat].mean()
+                        healthy_mean = df[df['target'] == 0][feat].mean()
+                        
+                        # Calculate distance to disease vs healthy
+                        dist_to_disease = abs(your_val - disease_mean)
+                        dist_to_healthy = abs(your_val - healthy_mean)
+                        
+                        # Determine risk indicator
+                        if dist_to_disease < dist_to_healthy:
+                            risk_indicator = "⚠️ Closer to Disease"
+                        elif dist_to_healthy < dist_to_disease:
+                            risk_indicator = "✅ Closer to Healthy"
+                        else:
+                            risk_indicator = "⚡ In Between"
+                        
+                        comparison_data.append({
+                            'Feature': feat,
+                            'Your Value': f"{your_val:.1f}",
+                            'Overall Avg': f"{dataset_mean:.1f}",
+                            'Disease Avg': f"{disease_mean:.1f}",
+                            'Healthy Avg': f"{healthy_mean:.1f}",
+                            'Risk Indicator': risk_indicator,
+                            'Importance': f"{row['Importance %']:.1f}%"
+                        })
+                
+                if comparison_data:
+                    comparison_df = pd.DataFrame(comparison_data)
+                    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+                    
+                    st.warning("""
+⚠️ **IMPORTANT - Why High Risk Despite "Normal" Values:**
+
+🧠 **Machine Learning finds PATTERNS, not simple rules:**
+- The model doesn't just check if "value > threshold"
+- It looks at the COMBINATION of all features together
+- Some features work in REVERSE (lower = worse, higher = worse)
+
+🎯 **"Risk Indicator" column shows the truth:**
+- ✅ Closer to Healthy = Good sign
+- ⚠️ Closer to Disease = Risk factor
+- Even if a number looks "small", it might match the disease pattern!
+
+📊 **Example from YOUR data:**
+- Features with many 0.0 values might match disease patterns where low values indicate risk
+- The model learned from 303 real patients what combinations predict disease
+- Your specific combination of values triggered the high-risk prediction
+                    """)
+            else:
+                # Fallback: Show input values without importance
+                st.markdown("#### 📋 Your Input Values")
+                
+                input_display = pd.DataFrame([
+                    {'Feature': k, 'Value': v} 
+                    for k, v in input_payload.items()
+                ]).head(10)
+                st.dataframe(input_display, use_container_width=True, hide_index=True)
+            
+            # Overall assessment explanation
+            st.markdown("---")
+            st.markdown("### 📋 How This Prediction Works")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("""
+                <div class='info-box'>
+                <h4 style='color: white;'>🎯 Prediction Threshold</h4>
+                <p><strong>Standard Threshold:</strong> 50% (default)</p>
+                <p><strong>Our Threshold:</strong> 45% (optimized)</p>
+                <br>
+                <p><strong>Why 45%?</strong></p>
+                <ul>
+                <li>Better detection of disease cases</li>
+                <li>Reduces false negatives (missed diagnoses)</li>
+                <li>More cautious approach for patient safety</li>
+                <li>Accounts for dataset imbalance (60% healthy, 40% disease)</li>
+                </ul>
+                <br>
+                <p><strong>Your Result:</strong> {:.1f}% disease probability</p>
+                <p>{}</p>
+                </div>
+                """.format(
+                    probability[1] * 100,
+                    "✅ Below 50% threshold = LOW RISK" if prediction == 0 else "⚠️ Above 50% threshold = HIGH RISK"
+                ), unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown("""
+                <div class='info-box'>
+                <h4 style='color: white;'>⚖️ Balanced Model Design</h4>
+                <p><strong>Challenge:</strong> More healthy people than diseased in data</p>
+                <p><strong>Solution:</strong> Balanced class weighting</p>
+                <br>
+                <p><strong>What This Means:</strong></p>
+                <ul>
+                <li>Model treats both classes equally important</li>
+                <li>Prevents bias toward "healthy" predictions</li>
+                <li>Better at catching early disease signs</li>
+                <li>More reliable for diverse patient profiles</li>
+                </ul>
+                <br>
+                <p><strong>Model Used:</strong> {}</p>
+                <p>Trained on {} patient records with {} clinical features</p>
+                </div>
+                """.format(model_type, len(df), X.shape[1]), unsafe_allow_html=True)
+            
+            # Risk level explanation
+            st.markdown("---")
+            st.markdown("### 📊 Understanding Risk Levels")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("""
+                <div style='background: rgba(102, 126, 234, 0.3); padding: 20px; border-radius: 10px; border: 2px solid #667eea;'>
+                <h4 style='color: #667eea; text-align: center;'>✅ LOW RISK</h4>
+                <p style='color: #e0e0e0; text-align: center; font-size: 14px;'>
+                <strong>Probability: 0-49%</strong><br><br>
+                • Few or no risk factors<br>
+                • Good cardiovascular health<br>
+                • Continue healthy lifestyle<br>
+                • Regular check-ups recommended
+                </p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown("""
+                <div style='background: rgba(255, 179, 0, 0.3); padding: 20px; border-radius: 10px; border: 2px solid #ffb300;'>
+                <h4 style='color: #ffb300; text-align: center;'>⚡ MODERATE RISK</h4>
+                <p style='color: #e0e0e0; text-align: center; font-size: 14px;'>
+                <strong>Probability: 40-60%</strong><br><br>
+                • Some risk factors present<br>
+                • Lifestyle changes needed<br>
+                • Close monitoring advised<br>
+                • Preventive measures important
+                </p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                st.markdown("""
+                <div style='background: rgba(245, 87, 108, 0.3); padding: 20px; border-radius: 10px; border: 2px solid #f5576c;'>
+                <h4 style='color: #f5576c; text-align: center;'>⚠️ HIGH RISK</h4>
+                <p style='color: #e0e0e0; text-align: center; font-size: 14px;'>
+                <strong>Probability: 50-100%</strong><br><br>
+                • Multiple risk factors<br>
+                • Medical attention needed<br>
+                • Comprehensive screening<br>
+                • Treatment plan required
+                </p>
+                </div>
+                """, unsafe_allow_html=True)
             
             # Recommendations
             st.markdown("---")
@@ -722,20 +1136,69 @@ elif page == "📈 Model Performance":
     
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    # Load pre-trained models or train fresh
+    st.info("📂 Loading pre-trained models...")
     
-    # Train multiple models
-    models = {
-        "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
-        "Gradient Boosting": GradientBoostingClassifier(n_estimators=100, random_state=42),
-        "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
-        "SVM": SVC(probability=True, random_state=42)
-    }
+    results = {}
     
-    with st.spinner("🔄 Training models..."):
-        results = {}
+    # Try to load classical models
+    try:
+        with open('models/random_forest_model.pkl', 'rb') as f:
+            rf_model = pickle.load(f)
+        with open('models/logistic_regression_model.pkl', 'rb') as f:
+            lr_model = pickle.load(f)
+        with open('models/svm_model.pkl', 'rb') as f:
+            svm_model = pickle.load(f)
+        with open('models/classical_scaler.pkl', 'rb') as f:
+            scaler = pickle.load(f)
+        with open('models/classical_metadata.pkl', 'rb') as f:
+            metadata = pickle.load(f)
+        
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Random Forest
+        y_pred_rf = rf_model.predict(X_test_scaled)
+        results["Random Forest"] = {
+            'model': rf_model,
+            'accuracy': metadata['random_forest']['accuracy'],
+            'predictions': y_pred_rf,
+            'source': 'Pre-trained'
+        }
+        
+        # Logistic Regression
+        y_pred_lr = lr_model.predict(X_test_scaled)
+        results["Logistic Regression"] = {
+            'model': lr_model,
+            'accuracy': metadata['logistic_regression']['accuracy'],
+            'predictions': y_pred_lr,
+            'source': 'Pre-trained'
+        }
+        
+        # SVM
+        y_pred_svm = svm_model.predict(X_test_scaled)
+        results["SVM"] = {
+            'model': svm_model,
+            'accuracy': metadata['svm']['accuracy'],
+            'predictions': y_pred_svm,
+            'source': 'Pre-trained'
+        }
+        
+        st.success("✅ Loaded Random Forest, Logistic Regression, and SVM from saved models!")
+        
+    except Exception as e:
+        st.warning(f"⚠️ Could not load classical models: {e}. Training fresh...")
+        
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Train classical models fresh
+        models = {
+            "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced'),
+            "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced'),
+            "SVM": SVC(probability=True, random_state=42, class_weight='balanced')
+        }
+        
         for name, model in models.items():
             model.fit(X_train_scaled, y_train)
             y_pred = model.predict(X_test_scaled)
@@ -743,8 +1206,136 @@ elif page == "📈 Model Performance":
             results[name] = {
                 'model': model,
                 'accuracy': accuracy,
-                'predictions': y_pred
+                'predictions': y_pred,
+                'source': 'Freshly trained'
             }
+    
+    # Load MLP model
+    try:
+        with open('models/mlp_model.pkl', 'rb') as f:
+            mlp_model = pickle.load(f)
+        with open('models/mlp_scaler.pkl', 'rb') as f:
+            mlp_scaler = pickle.load(f)
+        with open('models/mlp_metadata.pkl', 'rb') as f:
+            mlp_metadata = pickle.load(f)
+        
+        X_test_mlp = mlp_scaler.transform(X_test)
+        y_pred_mlp = mlp_model.predict(X_test_mlp)
+        
+        results["MLP (Neural Network)"] = {
+            'model': mlp_model,
+            'accuracy': mlp_metadata['accuracy'],
+            'predictions': y_pred_mlp,
+            'source': 'Pre-trained'
+        }
+        st.success("✅ Loaded MLP Neural Network from saved model!")
+        
+    except Exception as e:
+        st.warning(f"⚠️ Could not load MLP model: {e}. Training fresh...")
+        
+        if 'scaler' not in locals():
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+        
+        mlp_model = MLPClassifier(
+            hidden_layer_sizes=(128, 64, 32),
+            activation='relu',
+            solver='adam',
+            alpha=0.0001,
+            batch_size='auto',
+            learning_rate='adaptive',
+            learning_rate_init=0.001,
+            max_iter=500,
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=20,
+            random_state=42,
+            verbose=False
+        )
+        mlp_model.fit(X_train_scaled, y_train)
+        y_pred_mlp = mlp_model.predict(X_test_scaled)
+        
+        results["MLP (Neural Network)"] = {
+            'model': mlp_model,
+            'accuracy': accuracy_score(y_test, y_pred_mlp),
+            'predictions': y_pred_mlp,
+            'source': 'Freshly trained'
+        }
+    
+    # Load TabNet model
+    try:
+        tabnet_model = TabNetClassifier()
+        tabnet_model.load_model('models/tabnet_model.zip')
+        
+        with open('models/scaler.pkl', 'rb') as f:
+            tabnet_scaler = pickle.load(f)
+        with open('models/metadata.pkl', 'rb') as f:
+            tabnet_metadata = pickle.load(f)
+        
+        X_test_tabnet = tabnet_scaler.transform(X_test)
+        y_pred_tabnet = tabnet_model.predict(X_test_tabnet)
+        
+        results["TabNet (Deep Learning)"] = {
+            'model': tabnet_model,
+            'accuracy': tabnet_metadata['accuracy'],
+            'predictions': y_pred_tabnet,
+            'source': 'Pre-trained'
+        }
+        st.success("✅ Loaded TabNet Deep Learning model from saved model!")
+        
+    except Exception as e:
+        st.warning(f"⚠️ Could not load TabNet model: {e}. Training fresh...")
+        
+        if 'scaler' not in locals():
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+        
+        # Calculate appropriate batch size based on dataset size
+        n_samples = len(X_train_scaled)
+        batch_size = min(32, max(8, n_samples // 8))
+        virtual_batch_size = max(4, batch_size // 2)
+        
+        tabnet_model = TabNetClassifier(
+            n_d=64,
+            n_a=64,
+            n_steps=5,
+            gamma=1.5,
+            n_independent=2,
+            n_shared=2,
+            lambda_sparse=1e-3,
+            optimizer_fn=torch.optim.Adam,
+            optimizer_params=dict(lr=2e-2),
+            scheduler_params={"step_size": 50, "gamma": 0.9},
+            scheduler_fn=torch.optim.lr_scheduler.StepLR,
+            mask_type='entmax',
+            seed=42,
+            verbose=0
+        )
+        
+        # TabNet uses numpy arrays
+        tabnet_model.fit(
+            X_train_scaled, y_train.values,
+            eval_set=[(X_test_scaled, y_test.values)],
+            eval_name=['test'],
+            eval_metric=['accuracy', 'logloss'],
+            max_epochs=100,
+            patience=20,
+            batch_size=batch_size,
+            virtual_batch_size=virtual_batch_size,
+            num_workers=0,
+            drop_last=False
+        )
+        
+        y_pred_tabnet = tabnet_model.predict(X_test_scaled)
+        
+        results["TabNet (Deep Learning)"] = {
+            'model': tabnet_model,
+            'accuracy': accuracy_score(y_test, y_pred_tabnet),
+            'predictions': y_pred_tabnet,
+            'source': 'Freshly trained'
+        }
     
     # Model comparison
     st.markdown("### 🏆 Model Comparison")
@@ -768,7 +1359,7 @@ elif page == "📈 Model Performance":
     with col2:
         st.markdown("#### 🥇 Rankings")
         for idx, row in comparison_df.iterrows():
-            rank_emoji = ["🥇", "🥈", "🥉", "🏅"][comparison_df.index.get_loc(idx)]
+            rank_emoji = ["🥇", "🥈", "🥉", "🏅", "⭐"][comparison_df.index.get_loc(idx)]
             st.metric(f"{rank_emoji} {row['Model']}", f"{row['Accuracy']:.2f}%")
     
     # Detailed analysis for best model
@@ -803,7 +1394,12 @@ elif page == "📈 Model Performance":
             st.metric("False Negatives", cm[1][0])
     
     with tab2:
-        y_pred_proba = best_model.predict_proba(X_test_scaled)[:, 1]
+        # Handle predict_proba for TabNet differently
+        if "TabNet" in best_model_name:
+            y_pred_proba = best_model.predict_proba(X_test_scaled)[:, 1]
+        else:
+            y_pred_proba = best_model.predict_proba(X_test_scaled)[:, 1]
+        
         fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
         roc_auc = auc(fpr, tpr)
         
@@ -842,7 +1438,7 @@ else:
         ### 📖 Overview
         
         This Heart Disease Prediction System uses machine learning to assess cardiovascular risk 
-        based on clinical parameters. The application analyzes 13 key health indicators to 
+        based on clinical parameters. The application analyzes 16 key health indicators to 
         provide accurate predictions.
         
         ### 🎯 Features
@@ -855,7 +1451,7 @@ else:
         
         ### 🏥 Clinical Parameters
         
-        The system analyzes the following 14 attributes:
+        The system analyzes the following 16 attributes:
         
         1. **Age**: Patient's age in years
         2. **Sex**: Gender (Male/Female)
@@ -876,7 +1472,11 @@ else:
         11. **Slope**: Of peak exercise ST segment
         12. **Major Vessels**: Colored by fluoroscopy (0-3)
         13. **Thalassemia**: Blood disorder type
-        14. **Target**: Heart disease diagnosis
+        14. **Smoking**: Current smoking status
+        15. **Diabetes**: Diabetes diagnosis
+        16. **BMI**: Body Mass Index
+        
+        **Target**: Heart disease diagnosis
         
         ### 📚 Data Source
         

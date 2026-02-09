@@ -13,3 +13,6 @@ pyparsing
 narwhals
 pillow
 python-dateutil
+torch
+pytorch-tabnet
+tqdm
