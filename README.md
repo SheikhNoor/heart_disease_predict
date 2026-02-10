@@ -225,7 +225,7 @@ The ML models learn from **these specific patterns**, not general medical rules.
 
 3. **Access the Application**
    - Local URL: http://localhost:8501
-   - Network URL: http://<your-ip>:8501
+   - Network URL: https://cardiac-ai.streamlit.app/
 
 4. **Navigate Through Pages**
    - 🏠 **Home**: Overview and statistics
